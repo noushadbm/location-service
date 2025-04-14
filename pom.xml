@@ -8,10 +8,10 @@
         <version>3.3.8</version>
         <relativePath/>
     </parent>
-    <groupId>com.example</groupId>
-    <artifactId>reports-api</artifactId>
+    <groupId>com.rayshan</groupId>
+    <artifactId>location-service</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>reports-api</name>
+    <name>location-service</name>
     <description>REST API for Reports SQLite Database</description>
 
     <properties>
