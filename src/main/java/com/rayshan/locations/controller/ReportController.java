@@ -1,6 +1,7 @@
 package com.rayshan.locations.controller;
 
 import com.rayshan.locations.entity.Report;
+import com.rayshan.locations.model.LocationData;
 import com.rayshan.locations.service.ReportService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -23,7 +24,7 @@ public class ReportController {
     }
 
     @GetMapping
-    public ResponseEntity<List<Report>> getAllReports() throws Exception {
+    public ResponseEntity<List<LocationData>> getAllReports() throws Exception {
         return ResponseEntity.ok(reportService.getAllReports());
     }
 

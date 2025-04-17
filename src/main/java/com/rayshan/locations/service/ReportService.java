@@ -2,14 +2,16 @@ package com.rayshan.locations.service;
 
 import com.rayshan.locations.entity.Report;
 import com.rayshan.locations.entity.ReportId;
+import com.rayshan.locations.model.LocationData;
 import com.rayshan.locations.repository.ReportRepository;
+import com.rayshan.locations.util.CryptoUtils;
 import com.rayshan.locations.util.FileUtils;
+import lombok.extern.log4j.Log4j2;
 import org.bouncycastle.jce.spec.ECParameterSpec;
 import org.bouncycastle.jce.spec.ECPrivateKeySpec;
 import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.math.ec.ECCurve;
 import org.bouncycastle.math.ec.ECPoint;
-import org.bouncycastle.math.ec.rfc8032.Ed25519;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -22,7 +24,6 @@ import java.nio.file.Path;
 import java.util.*;
 
 import java.security.*;
-import java.security.spec.*;
 import java.util.Arrays;
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
@@ -30,16 +31,17 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 import org.bouncycastle.jce.ECNamedCurveTable;
-import org.bouncycastle.jce.spec.*;
-import org.bouncycastle.math.ec.ECPoint;
-import java.security.Security;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import java.security.interfaces.ECPrivateKey;
-import java.security.interfaces.ECPublicKey;
-import java.nio.ByteBuffer;
+
 import java.util.Base64;
 import java.security.MessageDigest;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 
+import static com.rayshan.locations.common.Constants.COMMON_DATE_FORMAT;
+
+@Log4j2
 @Service
 public class ReportService {
 
@@ -50,10 +52,13 @@ public class ReportService {
         this.reportRepository = reportRepository;
     }
 
-    public List<Report> getAllReports() throws Exception {
+    public List<LocationData> getAllReports() throws Exception {
+        // TODO: Read stored reports from the database
+        log.info("Reading all reports from the database");
         List<Report> records = reportRepository.findAll();
-        test(records);
-        return records;
+        log.info("Converting to location data");
+        List<LocationData> locations = convertToLocationData(records);
+        return locations;
     }
 
     public Optional<Report> getReportById(String idShort, Integer timestamp) {
@@ -80,20 +85,22 @@ public class ReportService {
         reportRepository.deleteById(new ReportId(idShort, timestamp));
     }
 
-    public void test(List<Report> records) throws Exception {
+    public List<LocationData> convertToLocationData(List<Report> records) throws Exception {
+        log.info("Converting reports to location data. Size: {}", records.size());
         Map<String, String> keyMap = new HashMap<>();
         List<Path> keyFiles = FileUtils.findKeyFiles(".");
         keyFiles.stream().forEach(file -> {
             try {
-                Map.Entry<String, String> entry = getKeyMapEntry(file);
+                Map.Entry<String, String> entry = CryptoUtils.getKeyMapEntry(file);
                 keyMap.put(entry.getKey(), entry.getValue());
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
         });
 
-        System.out.println("==> keyMap: " + keyMap);
+        //System.out.println("==> keyMap: " + keyMap);
 
+        List<LocationData> locationDataList = new ArrayList<>();
         for(Report report: records) {
             String base64HashedKey = keyMap.get(report.getId());
             byte[] keyBytes = Base64.getDecoder().decode(base64HashedKey);
@@ -110,8 +117,7 @@ public class ReportService {
             int unsignedTimestamp = ByteBuffer.wrap(timestampBytes).order(ByteOrder.BIG_ENDIAN).getInt();
             long timestamp = Integer.toUnsignedLong(unsignedTimestamp) + 978307200L;
 
-            System.out.println("Timestamp: " + timestamp);
-
+            //System.out.println("Timestamp: " + timestamp);
             byte[] ephPubKeyBytes = Arrays.copyOfRange(data, 5, 62);
             ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("secp224r1");
             ECCurve curve = ecSpec.getCurve();
@@ -149,45 +155,16 @@ public class ReportService {
             byte[] encData = Arrays.copyOfRange(data, 62, 72); // 10 bytes
             byte[] tag = Arrays.copyOfRange(data, 72, data.length);
 
-            byte[] decrypted = decrypt(encData, tag, decryptionKey, iv);
-            Map<String, Object> valueMap = decodeTag(decrypted);
-            System.out.println("Decrypted data: " + valueMap);
-
+            byte[] decrypted = CryptoUtils.decrypt(encData, tag, decryptionKey, iv);
+            //Map<String, Object> valueMap = decodeTag(decrypted);
+            //System.out.println("Decrypted data: " + valueMap);
+            LocationData locationData = decodeTag(decrypted, timestamp);
+            locationDataList.add(locationData);
         }
-
-
+        log.info("Returning location data list.");
+        return locationDataList;
     }
-
-    public static Map.Entry<String, String> getKeyMapEntry(Path filePath) throws IOException {
-        final String[] key = new String[1];
-        final String[] value = new String[1];
-        Files.lines(filePath).forEach(line -> {
-            String[] parts = line.split(":");
-            if (parts[0].trim().equals("Hashed adv key")) {
-                key[0] = parts[1].trim();
-            } else if(parts[0].trim().equals("Private key")) {
-                value[0] = parts[1].trim();
-            }
-        });
-        System.out.println("Key: " + key[0]);
-        System.out.println("value: " + value[0]);
-        return Map.entry(key[0], value[0]);
-    }
-
-    public static byte[] decrypt(byte[] encData, byte[] tag, byte[] decryptionKey, byte[] iv) throws Exception {
-        byte[] combinedCiphertext = new byte[encData.length + tag.length];
-        System.arraycopy(encData, 0, combinedCiphertext, 0, encData.length);
-        System.arraycopy(tag, 0, combinedCiphertext, encData.length, tag.length);
-
-        SecretKeySpec keySpec = new SecretKeySpec(decryptionKey, "AES");
-        GCMParameterSpec gcmSpec = new GCMParameterSpec(tag.length * 8, iv); // e.g., 80 bits if tag is 10 bytes
-
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec);
-        return cipher.doFinal(combinedCiphertext);
-    }
-
-    public static Map<String, Object> decodeTag(byte[] data) {
+    public static LocationData decodeTag(byte[] data, long timestamp) {
         ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
 
         int latRaw = buffer.getInt(0);
@@ -198,11 +175,23 @@ public class ReportService {
         int confidence = Byte.toUnsignedInt(data[8]);
         int status = Byte.toUnsignedInt(data[9]);
 
-        Map<String, Object> tag = new HashMap<>();
-        tag.put("lat", latitude);
-        tag.put("lon", longitude);
-        tag.put("conf", confidence);
-        tag.put("status", status);
-        return tag;
+//        Map<String, Object> tag = new HashMap<>();
+//        tag.put("lat", latitude);
+//        tag.put("lon", longitude);
+//        tag.put("conf", confidence);
+//        tag.put("status", status);
+        //return tag;
+
+        LocationData locationData = new LocationData();
+        locationData.setLongitude(longitude);
+        locationData.setLatitude(latitude);
+        locationData.setConfidence(confidence);
+        locationData.setUrl("https://maps.google.com/maps?q="+ latitude +"," + longitude);
+
+        LocalDateTime dateTime = LocalDateTime.ofInstant(Instant.ofEpochSecond(timestamp), ZoneId.systemDefault());
+        // Format the date and time as a string
+        String formattedDate = dateTime.format(COMMON_DATE_FORMAT);
+        locationData.setDateTime(formattedDate);
+        return locationData;
     }
 }
