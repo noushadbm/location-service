@@ -3,6 +3,7 @@ package com.rayshan.locations.service;
 import com.rayshan.locations.entity.Report;
 import com.rayshan.locations.entity.ReportId;
 import com.rayshan.locations.model.LocationData;
+import com.rayshan.locations.model.LocationResponse;
 import com.rayshan.locations.repository.ReportRepository;
 import com.rayshan.locations.util.CryptoUtils;
 import com.rayshan.locations.util.FileUtils;
@@ -13,22 +14,20 @@ import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.math.ec.ECCurve;
 import org.bouncycastle.math.ec.ECPoint;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDate;
 import java.util.*;
 
 import java.security.*;
 import java.util.Arrays;
-import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
-import javax.crypto.spec.GCMParameterSpec;
-import javax.crypto.spec.SecretKeySpec;
 
 import org.bouncycastle.jce.ECNamedCurveTable;
 
@@ -37,9 +36,9 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 
 import static com.rayshan.locations.common.Constants.COMMON_DATE_FORMAT;
+import static com.rayshan.locations.common.Constants.DATE_FORMATTER_YYYY_MM_DD;
 
 @Log4j2
 @Service
@@ -52,13 +51,13 @@ public class ReportService {
         this.reportRepository = reportRepository;
     }
 
-    public List<LocationData> getAllReports() throws Exception {
+    public LocationResponse getAllReports() throws Exception {
         // TODO: Read stored reports from the database
         log.info("Reading all reports from the database");
-        List<Report> records = reportRepository.findAll();
+        List<Report> records = reportRepository.findAll(Sort.by("timestamp").ascending());
         log.info("Converting to location data");
-        List<LocationData> locations = convertToLocationData(records);
-        return locations;
+        LocationResponse locationResponse = convertToLocationData(records);
+        return locationResponse;
     }
 
     public Optional<Report> getReportById(String idShort, Integer timestamp) {
@@ -85,7 +84,7 @@ public class ReportService {
         reportRepository.deleteById(new ReportId(idShort, timestamp));
     }
 
-    public List<LocationData> convertToLocationData(List<Report> records) throws Exception {
+    public LocationResponse convertToLocationData(List<Report> records) throws Exception {
         log.info("Converting reports to location data. Size: {}", records.size());
         Map<String, String> keyMap = new HashMap<>();
         List<Path> keyFiles = FileUtils.findKeyFiles(".");
@@ -99,7 +98,8 @@ public class ReportService {
         });
 
         //System.out.println("==> keyMap: " + keyMap);
-
+        LocationResponse locationResponse = new LocationResponse();
+        Set<LocalDate> uniqueDates = new TreeSet<>();
         List<LocationData> locationDataList = new ArrayList<>();
         for(Report report: records) {
             String base64HashedKey = keyMap.get(report.getId());
@@ -160,9 +160,20 @@ public class ReportService {
             //System.out.println("Decrypted data: " + valueMap);
             LocationData locationData = decodeTag(decrypted, timestamp);
             locationDataList.add(locationData);
+            LocalDateTime dateTime = LocalDateTime.parse(locationData.getDateTime(), COMMON_DATE_FORMAT);
+            uniqueDates.add(dateTime.toLocalDate());
         }
+
+        locationResponse.setLocations(locationDataList);
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put("totalRecords", records.size());
+        List<String> sortedDates = uniqueDates.stream()
+                .map(date -> date.format(DATE_FORMATTER_YYYY_MM_DD))
+                .toList();
+        metadata.put("dates", sortedDates);
+        locationResponse.setMetadata(metadata);
         log.info("Returning location data list.");
-        return locationDataList;
+        return locationResponse;
     }
     public static LocationData decodeTag(byte[] data, long timestamp) {
         ByteBuffer buffer = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
